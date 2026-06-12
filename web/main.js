@@ -1177,38 +1177,78 @@ function parseRepoFromUrl() {
   return owner && repo ? { owner, repo, branch } : null;
 }
 
+let supabaseClient = null; // set in client mode, used by sign-out + re-auth
+
+const isAuthError = (err) => err?.status === 401 || /bad credentials|401/i.test(err?.message || "");
+
+// Drop the cached GitHub token and the Supabase session so the next screen
+// forces a fresh "Sign in with GitHub" (re-consent after a revoke).
+async function clearAuth() {
+  sessionStorage.removeItem("gh_token");
+  try { await supabaseClient?.auth.signOut(); } catch { /* ignore */ }
+}
+
+// Wrap the client API so a 401 anywhere (e.g. token revoked mid-session)
+// kicks the user back to a fresh sign-in instead of spamming "Bad credentials".
+function withAuthGuard(inner) {
+  const guard = async (fn) => {
+    try { return await fn(); }
+    catch (err) {
+      if (isAuthError(err)) {
+        await clearAuth();
+        showAuthOverlay(false, parseRepoFromUrl(), "Your GitHub access was revoked or expired. Please sign in again.");
+      }
+      throw err;
+    }
+  };
+  return { get: (u) => guard(() => inner.get(u)), send: (m, u, b) => guard(() => inner.send(m, u, b)) };
+}
+
 async function startClientApp(token, info) {
-  // Resolve the base branch (URL override, else the repo's default).
+  // Resolve the base branch (URL override, else the repo's default). This is also
+  // the first authenticated call, so a revoked token fails here with 401.
   let baseBranch = info.branch;
   if (!baseBranch) {
     const meta = await new Octokit({ auth: token }).repos.get({ owner: info.owner, repo: info.repo });
     baseBranch = meta.data.default_branch;
   }
-  api = makeClientApi({ token, owner: info.owner, repo: info.repo, baseBranch });
+  api = withAuthGuard(makeClientApi({ token, owner: info.owner, repo: info.repo, baseBranch }));
   $("auth-overlay").classList.add("hidden");
+  $("signout-btn").classList.remove("hidden");
   boot();
 }
 
 async function setupClientMode(cfg) {
-  const supabase = createClient(cfg.supabaseUrl, cfg.supabaseAnonKey);
+  supabaseClient = createClient(cfg.supabaseUrl, cfg.supabaseAnonKey);
   // provider_token (the GitHub token) is only present right after OAuth; cache it.
-  supabase.auth.onAuthStateChange((_e, session) => {
+  supabaseClient.auth.onAuthStateChange((_e, session) => {
     if (session?.provider_token) sessionStorage.setItem("gh_token", session.provider_token);
   });
-  const { data: { session } } = await supabase.auth.getSession();
+  $("signout-btn").onclick = async () => { await clearAuth(); location.reload(); };
+
+  const { data: { session } } = await supabaseClient.auth.getSession();
   const token = session?.provider_token || sessionStorage.getItem("gh_token");
   const info = parseRepoFromUrl();
 
   if (token && info) {
     try { await startClientApp(token, info); return; }
-    catch (err) { showAuthOverlay(supabase, !!token, info, "Couldn't open repo: " + err.message); return; }
+    catch (err) {
+      if (isAuthError(err)) {
+        await clearAuth(); // revoked/expired token cached -> force a real sign-in
+        showAuthOverlay(false, info, "Your GitHub access was revoked or expired. Please sign in again.");
+      } else {
+        showAuthOverlay(!!token, info, "Couldn't open repo: " + err.message);
+      }
+      return;
+    }
   }
-  showAuthOverlay(supabase, !!token, info, "");
+  showAuthOverlay(!!token, info, "");
 }
 
-function showAuthOverlay(supabase, hasToken, info, note) {
+function showAuthOverlay(hasToken, info, note) {
   const overlay = $("auth-overlay");
   overlay.classList.remove("hidden");
+  $("signout-btn").classList.add("hidden");
   $("auth-repo").value = info ? `${info.owner}/${info.repo}` : "";
   $("auth-note").textContent = note;
   const btn = $("auth-action");
@@ -1224,11 +1264,15 @@ function showAuthOverlay(supabase, hasToken, info, note) {
     const token = sessionStorage.getItem("gh_token");
     if (hasToken && token) {
       history.replaceState(null, "", url.toString());
-      try { await startClientApp(token, parseRepoFromUrl()); }
-      catch (err) { $("auth-note").textContent = err.message; }
+      try {
+        await startClientApp(token, parseRepoFromUrl());
+      } catch (err) {
+        if (isAuthError(err)) { await clearAuth(); showAuthOverlay(false, parseRepoFromUrl(), "That session is no longer valid. Please sign in again."); }
+        else $("auth-note").textContent = err.message;
+      }
     } else {
       // Carry the repo through the OAuth round-trip via redirectTo.
-      await supabase.auth.signInWithOAuth({ provider: "github", options: { scopes: "repo", redirectTo: url.toString() } });
+      await supabaseClient.auth.signInWithOAuth({ provider: "github", options: { scopes: "repo", redirectTo: url.toString() } });
     }
   };
 }
