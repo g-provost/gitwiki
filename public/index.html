@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>gitwiki</title>
+  <link rel="stylesheet" href="style.css" />
+  <!-- Mermaid (UMD global) — loaded from CDN because it uses runtime import() that
+       can't be bundled into an IIFE. Accessed in the bundle via window.mermaid. -->
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+  <!-- Public client config (Supabase URL/key for client OAuth mode; empty = server mode) -->
+  <script src="config.js"></script>
+  <!-- Frontend is bundled (TipTap/ProseMirror + markdown-it) by esbuild into bundle.js -->
+  <script defer src="bundle.js"></script>
+</head>
+<body>
+  <!-- Sign-in / repo picker (client OAuth mode) -->
+  <div id="auth-overlay" class="hidden">
+    <div class="auth-card">
+      <div class="auth-brand">📘 gitwiki</div>
+      <p class="muted" id="auth-sub">Open a GitHub repository as a wiki.</p>
+      <label class="auth-field">Repository
+        <input id="auth-repo" placeholder="owner/repo" autocomplete="off" />
+      </label>
+      <button id="auth-action" class="primary">Sign in with GitHub</button>
+      <p class="muted auth-note" id="auth-note"></p>
+    </div>
+  </div>
+
+  <header id="topbar">
+    <div class="brand">📘 gitwiki <span id="repo-label" class="muted"></span></div>
+    <div class="topbar-controls">
+      <label class="branch-picker">
+        <span class="muted">Branch</span>
+        <select id="branch-select"></select>
+      </label>
+      <button id="new-branch-btn" title="Create a draft branch">+ Draft branch</button>
+      <button id="review-btn" class="primary hidden" title="Review this draft's changes vs base">Review draft</button>
+      <button id="theme-btn" class="ghost" title="Toggle dark mode">🌙</button>
+      <span id="user-label" class="muted"></span>
+    </div>
+  </header>
+
+  <div id="layout">
+    <!-- Left: page tree -->
+    <nav id="sidebar">
+      <div class="sidebar-head">
+        <span>Pages</span>
+        <span class="head-actions">
+          <button id="new-page-btn" class="icon-btn" title="New page (at root)">＋📄</button>
+          <button id="new-folder-btn" class="icon-btn" title="New folder (at root)">＋📁</button>
+        </span>
+      </div>
+      <ul id="page-list"></ul>
+      <div id="sidebar-resizer" title="Drag to resize"></div>
+    </nav>
+
+    <!-- Center: viewer / editor -->
+    <main id="content">
+      <div id="page-toolbar" class="hidden">
+        <span id="page-path" class="path"></span>
+        <span id="mode-tag" class="muted"></span>
+        <div class="spacer"></div>
+        <button id="edit-btn">Edit</button>
+        <button id="save-btn" class="primary hidden">Save</button>
+        <button id="cancel-btn" class="hidden">Cancel</button>
+        <button id="history-btn" class="ghost" title="Version history for this page">History</button>
+        <button id="publish-btn" class="ghost" title="Open a PR to merge this branch into base">Publish…</button>
+      </div>
+      <div id="format-bar" class="hidden"></div>
+      <div id="editor-host" class="markdown-body"></div>
+      <div id="empty-state" class="empty">Select a page on the left, or create one.</div>
+    </main>
+
+    <!-- Right: comments -->
+    <aside id="comments">
+      <div class="sidebar-head">Comments <span id="comment-issue" class="muted"></span></div>
+      <div id="comment-scroll">
+        <section class="comment-group">
+          <h4>Inline <span id="inline-hint" class="muted">— select any text, then click 💬 (or right-click → Comment).</span></h4>
+          <ul id="inline-list"></ul>
+        </section>
+        <section class="comment-group">
+          <h4>Page</h4>
+          <ul id="page-comment-list"></ul>
+        </section>
+      </div>
+      <div id="comment-box" class="hidden">
+        <textarea id="comment-input" placeholder="Add a page-level comment… (Markdown supported)"></textarea>
+        <button id="comment-send" class="primary">Comment</button>
+      </div>
+    </aside>
+  </div>
+
+  <!-- Draft review overlay -->
+  <div id="diff-modal" class="hidden">
+    <div class="diff-dialog">
+      <header class="diff-head">
+        <div>
+          <strong id="diff-title">Review draft</strong>
+          <span id="diff-summary" class="muted"></span>
+        </div>
+        <div class="diff-head-actions">
+          <button id="diff-publish" class="primary">Publish…</button>
+          <button id="diff-close" class="ghost">Close</button>
+        </div>
+      </header>
+      <div id="diff-body"></div>
+    </div>
+  </div>
+
+  <!-- Page version history -->
+  <div id="history-modal" class="hidden">
+    <div class="hist-dialog">
+      <header class="diff-head">
+        <strong id="hist-title">History</strong>
+        <button id="hist-close" class="ghost">Close</button>
+      </header>
+      <div class="hist-body">
+        <ul id="hist-list"></ul>
+        <div id="hist-diff"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Tree right-click context menu -->
+  <ul id="ctx-menu" class="hidden"></ul>
+
+  <!-- Floating "comment on selection" bubble -->
+  <button id="sel-bubble" class="hidden">💬 Comment</button>
+
+  <!-- Comment composer modal -->
+  <div id="comment-modal" class="hidden">
+    <div class="cmt-dialog">
+      <header class="cmt-head">
+        <strong>Add inline comment</strong>
+        <button id="cmt-close" class="ghost">✕</button>
+      </header>
+      <blockquote id="cmt-quote" class="cmt-quote"></blockquote>
+      <textarea id="cmt-input" placeholder="Write a comment… (Markdown supported)"></textarea>
+      <div class="cmt-actions">
+        <span class="muted">No commit — stored on the page's GitHub issue.</span>
+        <div class="spacer"></div>
+        <button id="cmt-cancel" class="ghost">Cancel</button>
+        <button id="cmt-submit" class="primary">Comment</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
