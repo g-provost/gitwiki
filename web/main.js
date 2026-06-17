@@ -40,7 +40,13 @@ let api = {
 };
 
 const $ = (id) => document.getElementById(id);
-const state = { baseBranch: "main", branch: "main", path: null, sha: null, mode: "view" };
+const state = { baseBranch: "main", branch: "main", path: null, sha: null, mode: "view", readOnly: false };
+
+// Block a write action when the app isn't installed (read-only browsing).
+function blockRO() {
+  if (state.readOnly) { toast("Read-only — install gitwiki on this repo to edit.", true); return true; }
+  return false;
+}
 
 function toast(msg, isError = false) {
   const t = $("toast");
@@ -419,6 +425,7 @@ function renderTreeNode(node, ul, prefix) {
     row.innerHTML = `<span class="tw">${open ? "▾" : "▸"}</span><span class="ti">📁</span><span class="tn">${esc(name)}</span>`;
     row.onclick = () => { open ? expandedDirs.delete(path) : expandedDirs.add(path); renderTree(); };
     row.oncontextmenu = (e) => {
+      if (state.readOnly) return;
       e.preventDefault(); e.stopPropagation();
       showCtx(e.pageX, e.pageY, [
         { label: "New page", fn: () => beginCreate(path, "page") },
@@ -447,6 +454,7 @@ function renderTreeNode(node, ul, prefix) {
     row.onclick = () => openPage(f.path);
     row.ondragstart = (e) => { e.dataTransfer.setData("text/plain", f.path); e.dataTransfer.effectAllowed = "move"; };
     row.oncontextmenu = (e) => {
+      if (state.readOnly) return;
       e.preventDefault(); e.stopPropagation();
       showCtx(e.pageX, e.pageY, [
         { label: "Rename", fn: () => beginRename(f.path) },
@@ -477,6 +485,7 @@ function makeDropTarget(el, folderPath) {
 
 // --- Tree actions: create / rename / move / delete -----------------------
 function beginCreate(parentPath, kind) {
+  if (blockRO()) return;
   if (parentPath) { expandedDirs.add(parentPath); renderTree(); }
   const container = parentPath
     ? document.querySelector(`ul.tree-sub[data-parent="${attr(parentPath)}"]`)
@@ -564,6 +573,7 @@ function moveViaPrompt(from) {
 }
 
 async function movePageUI(from, to) {
+  if (blockRO()) return;
   const branch = await ensureWritableBranch();
   if (!branch) return;
   try {
@@ -579,6 +589,7 @@ async function movePageUI(from, to) {
 }
 
 async function deletePageUI(path) {
+  if (blockRO()) return;
   if (!confirm(`Delete ${path}? This commits a deletion to the branch.`)) return;
   const branch = await ensureWritableBranch();
   if (!branch) return;
@@ -640,6 +651,7 @@ async function openPage(path) {
 }
 
 function setMode(mode) {
+  if (mode === "edit" && blockRO()) return;
   state.mode = mode; // "view" | "edit"
   const editing = mode === "edit";
   editor.setEditable(editing);
@@ -836,7 +848,7 @@ function onContextComment(e) {
 }
 
 function openCommentModal(info) {
-  if (!info) return;
+  if (!info || blockRO()) return;
   pendingSel = info;
   $("cmt-quote").textContent = info.quote.slice(0, 400);
   $("cmt-input").value = "";
@@ -882,7 +894,7 @@ async function resolveThread(a, resolve) {
 
 async function replyToAnchor(id, text) {
   text = (text || "").trim();
-  if (!text) return;
+  if (!text || blockRO()) return;
   try {
     await api.send("POST", "/api/comments", { path: state.path, body: `${buildMarker({ v: 1, kind: "reply", id })}\n\n${text}` });
     await loadComments(state.path);
@@ -892,6 +904,7 @@ async function replyToAnchor(id, text) {
 }
 
 async function sendComment() {
+  if (blockRO()) return;
   const input = $("comment-input");
   const body = input.value.trim();
   if (!body || !state.path) return;
@@ -925,6 +938,7 @@ async function newBranch() {
 }
 
 async function publish() {
+  if (blockRO()) return;
   if (state.branch === state.baseBranch) return toast("Already on base branch.", true);
   const draft = state.branch;
   try {
@@ -1122,7 +1136,7 @@ $("theme-btn").onclick = toggleTheme;
 // Root of the tree is a drop target (move to top level) + right-click menu.
 makeDropTarget($("page-list"), "");
 $("page-list").addEventListener("contextmenu", (e) => {
-  if (e.target.closest(".tree-row")) return; // row handlers take precedence
+  if (state.readOnly || e.target.closest(".tree-row")) return; // row handlers take precedence
   e.preventDefault();
   showCtx(e.pageX, e.pageY, [
     { label: "New page", fn: () => beginCreate("", "page") },
@@ -1154,6 +1168,7 @@ $("comment-modal").onclick = (e) => { if (e.target.id === "comment-modal") close
 $("cmt-input").onkeydown = (e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") submitInlineComment(); };
 
 document.addEventListener("mouseup", (e) => {
+  if (state.readOnly) return; // no commenting in read-only mode
   if (e.target.id === "sel-bubble" || $("comment-modal").contains(e.target)) return;
   setTimeout(() => {
     const info = getActiveSelection();
@@ -1212,31 +1227,41 @@ function withAuthGuard(inner) {
   return { get: (u) => guard(() => inner.get(u)), send: (m, u, b) => guard(() => inner.send(m, u, b)) };
 }
 
+let pendingInstall = null; // { token, info } — for the read-only banner's install/continue
+
 async function startClientApp(token, info) {
   const octo = new Octokit({ auth: token });
-  // App mode: a PUBLIC repo is readable even when the app isn't installed, so we
-  // can't infer install status from repos.get. Check the installations explicitly
-  // — otherwise the gate never fires for public repos and writes would 403 later.
+  // Is the app installed on this repo? (write access). In App mode only.
+  let installed = true;
   if (appSlug) {
-    let installed = false;
     try { installed = await isAppInstalledOnRepo(octo, info.owner, info.repo); }
-    catch (err) { if (isAuthError(err)) throw err; /* can't tell -> treat as not installed */ }
-    if (!installed) { showInstallGate(token, info); return; }
+    catch (err) { if (isAuthError(err)) throw err; installed = false; }
   }
-  // Resolve the default branch (also surfaces a revoked token as 401).
+  // Try to read the repo (resolve default branch). Public repos succeed even when
+  // the app isn't installed -> we load READ-ONLY. A 403/404 means we can't even
+  // read (private + not installed) -> must install to view.
   let baseBranch = info.branch;
   try {
     const meta = await octo.repos.get({ owner: info.owner, repo: info.repo });
     if (!baseBranch) baseBranch = meta.data.default_branch;
   } catch (err) {
     if (isAuthError(err)) throw err;
-    if (appSlug && isNoRepoAccess(err)) { showInstallGate(token, info); return; }
+    if (appSlug && !installed && isNoRepoAccess(err)) { showInstallGate(token, info); return; }
     throw err;
   }
+  state.readOnly = appSlug ? !installed : false;
+  pendingInstall = { token, info };
   api = withAuthGuard(makeClientApi({ token, owner: info.owner, repo: info.repo, baseBranch }));
   $("auth-overlay").classList.add("hidden");
   $("signout-btn").classList.remove("hidden");
+  applyReadOnlyUI();
   boot();
+}
+
+// Reflect read-only state: show a banner and hide write controls (via body class).
+function applyReadOnlyUI() {
+  document.body.classList.toggle("readonly", !!state.readOnly);
+  $("ro-banner").classList.toggle("hidden", !state.readOnly);
 }
 
 // Is the GitHub App installed (for this user) with access to owner/repo?
@@ -1271,10 +1296,20 @@ function showInstallGate(token, info) {
   cont.textContent = "I've installed it — continue";
   cont.onclick = async () => {
     const next = parseRepoString($("auth-repo").value) || info;
-    try { await startClientApp(token, next); }
-    catch (err) {
+    cont.disabled = true;
+    cont.textContent = "Checking…";
+    try {
+      await startClientApp(token, next);
+      // If we're still on the gate, the install wasn't detected.
+      if (!$("auth-overlay").classList.contains("hidden")) {
+        $("auth-note").textContent = "Not detected yet — confirm the app has Contents/Issues/Pull-requests permissions and is installed on this repo.";
+      }
+    } catch (err) {
       if (isAuthError(err)) { await clearAuth(); showAuthOverlay(false, next, "Session expired. Please sign in again."); }
-      else $("auth-note").textContent = "Still no access — make sure the app is installed on this repo. (" + err.message + ")";
+      else $("auth-note").textContent = "Still no access: " + err.message;
+    } finally {
+      cont.disabled = false;
+      cont.textContent = "I've installed it — continue";
     }
   };
 }
@@ -1294,6 +1329,12 @@ async function setupClientMode(cfg) {
     if (session?.provider_token) sessionStorage.setItem("gh_token", session.provider_token);
   });
   $("signout-btn").onclick = async () => { await clearAuth(); location.reload(); };
+  $("ro-install").onclick = () => { if (appSlug) window.open(`https://github.com/apps/${appSlug}/installations/new`, "_blank"); };
+  $("ro-continue").onclick = async () => {
+    if (!pendingInstall) return;
+    try { await startClientApp(pendingInstall.token, pendingInstall.info); }
+    catch (err) { toast(err.message, true); }
+  };
 
   const { data: { session } } = await supabaseClient.auth.getSession();
   const token = session?.provider_token || sessionStorage.getItem("gh_token");
