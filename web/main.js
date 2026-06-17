@@ -1213,13 +1213,20 @@ function withAuthGuard(inner) {
 }
 
 async function startClientApp(token, info) {
-  // Verify access (and resolve the default branch) with one call. This is the
-  // first authenticated request, so it surfaces both auth and access problems:
-  //  - 401  -> token revoked/expired  (let the caller recover)
-  //  - 403/404 in App mode -> app not installed on this repo -> install gate
+  const octo = new Octokit({ auth: token });
+  // App mode: a PUBLIC repo is readable even when the app isn't installed, so we
+  // can't infer install status from repos.get. Check the installations explicitly
+  // — otherwise the gate never fires for public repos and writes would 403 later.
+  if (appSlug) {
+    let installed = false;
+    try { installed = await isAppInstalledOnRepo(octo, info.owner, info.repo); }
+    catch (err) { if (isAuthError(err)) throw err; /* can't tell -> treat as not installed */ }
+    if (!installed) { showInstallGate(token, info); return; }
+  }
+  // Resolve the default branch (also surfaces a revoked token as 401).
   let baseBranch = info.branch;
   try {
-    const meta = await new Octokit({ auth: token }).repos.get({ owner: info.owner, repo: info.repo });
+    const meta = await octo.repos.get({ owner: info.owner, repo: info.repo });
     if (!baseBranch) baseBranch = meta.data.default_branch;
   } catch (err) {
     if (isAuthError(err)) throw err;
@@ -1230,6 +1237,20 @@ async function startClientApp(token, info) {
   $("auth-overlay").classList.add("hidden");
   $("signout-btn").classList.remove("hidden");
   boot();
+}
+
+// Is the GitHub App installed (for this user) with access to owner/repo?
+async function isAppInstalledOnRepo(octo, owner, repo) {
+  const target = `${owner}/${repo}`.toLowerCase();
+  const { data } = await octo.request("GET /user/installations", { per_page: 100 });
+  for (const inst of data.installations || []) {
+    // "all repos" install on the owning account covers it.
+    if (inst.repository_selection === "all" && inst.account?.login?.toLowerCase() === owner.toLowerCase()) return true;
+    // otherwise check the explicitly-selected repos for this installation.
+    const res = await octo.request("GET /user/installations/{installation_id}/repositories", { installation_id: inst.id, per_page: 100 });
+    if ((res.data.repositories || []).some((r) => r.full_name.toLowerCase() === target)) return true;
+  }
+  return false;
 }
 
 // GitHub App mode: the user is signed in but the App isn't installed on this repo
