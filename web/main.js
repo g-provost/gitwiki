@@ -1238,8 +1238,13 @@ function withAuthGuard(inner) {
 
 let pendingInstall = null; // { token, info } — for the read-only banner's install/continue
 
+// GitHub caches authed GET responses (~60s) and installation changes propagate
+// with a lag, so detection must bypass the browser HTTP cache.
+const noStoreFetch = (url, opts) => fetch(url, { ...opts, cache: "no-store" });
+const ghOcto = (token) => new Octokit({ auth: token, request: { fetch: noStoreFetch } });
+
 async function startClientApp(token, info) {
-  const octo = new Octokit({ auth: token });
+  const octo = ghOcto(token);
   // Is the app installed on this repo? (write access). In App mode only.
   let installed = true;
   if (appSlug) {
@@ -1347,14 +1352,20 @@ async function setupClientMode(cfg) {
   $("ro-continue").onclick = async () => {
     if (!pendingInstall) return;
     const b = $("ro-continue");
-    b.disabled = true; b.textContent = "Checking…";
-    try {
-      await startClientApp(pendingInstall.token, pendingInstall.info);
-      const { owner, repo } = pendingInstall.info;
-      if (state.readOnly) toast(`Still not detected on ${owner}/${repo} — confirm gitwiki is installed on this exact repo with Contents access (see console for details).`, true);
-      else toast("Editing enabled.");
-    } catch (err) { toast(err.message, true); }
-    finally { b.disabled = false; b.textContent = "I've installed it"; }
+    const { token, info } = pendingInstall;
+    b.disabled = true;
+    // Poll past GitHub's cache/propagation lag instead of making the user spam the button.
+    const octo = ghOcto(token);
+    let ok = false;
+    for (let i = 0; i < 5 && !ok; i++) {
+      b.textContent = i ? `Checking… (${i + 1})` : "Checking…";
+      try { ok = await isAppInstalledOnRepo(octo, info.owner, info.repo); } catch { /* keep polling */ }
+      if (!ok && i < 4) await new Promise((r) => setTimeout(r, 1500));
+    }
+    b.disabled = false;
+    b.textContent = "I've installed it";
+    if (ok) { await startClientApp(token, info); toast("Editing enabled."); }
+    else toast(`Still not detected on ${info.owner}/${info.repo} — confirm gitwiki is installed on this exact repo with Contents access (see console).`, true);
   };
 
   const { data: { session } } = await supabaseClient.auth.getSession();
