@@ -66,7 +66,9 @@ body {
   width: 100%; margin-top: 5px; padding: 9px 11px; font: inherit; box-sizing: border-box;
   border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text);
 }
-#auth-action { width: 100%; padding: 10px; font-size: 14px; }
+#auth-action, #auth-action2 { width: 100%; padding: 10px; font-size: 14px; }
+#auth-action2 { margin-top: 8px; background: transparent; border: 1px solid var(--border); color: var(--text); }
+#auth-action2:hover { background: var(--bg); }
 .auth-note { margin: 12px 0 0; min-height: 1em; color: var(--danger); }
 
 /* Top bar */

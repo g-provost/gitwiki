@@ -121,9 +121,25 @@ To enable it:
 
 **Upsides of client mode:** real per-user authorship (commits/comments are *yours*), per-user
 rate limits, and no server holding secrets or repo data. **Caveats:** the GitHub token lives
-in the browser (XSS exposure — scope it tightly); use an OAuth App (non-expiring token) rather
-than a GitHub App (expiring user tokens need refresh handling); Supabase doesn't persist
-`provider_token`, so gitwiki caches it in `sessionStorage` for the tab.
+in the browser (XSS exposure — scope it tightly); Supabase doesn't persist `provider_token`,
+so gitwiki caches it in `sessionStorage` for the tab.
+
+#### Per-repository access (GitHub App mode)
+By default the OAuth App requests the `repo` scope — all of the user's repos. To limit access
+to **only the repo a user opens**, use a **GitHub App** instead:
+1. Create a GitHub App with **Repository permissions**: Contents R/W, Issues R/W, Pull requests
+   R/W, Metadata R. Set its callback URL to the Supabase callback, enable *"Request user
+   authorization (OAuth) during installation,"* and turn **off** *"Expire user authorization
+   tokens"* (so the browser token doesn't need refreshing).
+2. In Supabase's GitHub provider, use the **GitHub App's** Client ID/Secret (a GitHub App has an
+   OAuth-compatible user flow).
+3. Set `githubAppSlug` in [`public/config.js`](public/config.js) to the app's slug
+   (`github.com/apps/<slug>`).
+
+Now sign-in works as before, but if the app isn't installed on the opened repo, gitwiki shows an
+**"Install on this repository"** gate; the user installs it on just that repo, and the resulting
+token can't touch anything else. (Org-owned repos require an org owner to approve the install —
+the same governance an org's OAuth-app policy would impose, but the grant is per-repo, not all-repos.)
 
 ### `.env`
 

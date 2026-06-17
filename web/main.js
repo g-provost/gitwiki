@@ -1178,8 +1178,16 @@ function parseRepoFromUrl() {
 }
 
 let supabaseClient = null; // set in client mode, used by sign-out + re-auth
+let appSlug = "";          // GitHub App slug (set => per-repo install-gate mode)
 
 const isAuthError = (err) => err?.status === 401 || /bad credentials|401/i.test(err?.message || "");
+// Not-installed / no-access on a repo (GitHub returns 404 to avoid leaking existence, or 403).
+const isNoRepoAccess = (err) => err?.status === 404 || err?.status === 403;
+
+function parseRepoString(s) {
+  const m = /^([^/\s]+)\/([^/\s]+)$/.exec((s || "").trim());
+  return m ? { owner: m[1], repo: m[2], branch: "" } : null;
+}
 
 // Drop the cached GitHub token and the Supabase session so the next screen
 // forces a fresh "Sign in with GitHub" (re-consent after a revoke).
@@ -1205,12 +1213,18 @@ function withAuthGuard(inner) {
 }
 
 async function startClientApp(token, info) {
-  // Resolve the base branch (URL override, else the repo's default). This is also
-  // the first authenticated call, so a revoked token fails here with 401.
+  // Verify access (and resolve the default branch) with one call. This is the
+  // first authenticated request, so it surfaces both auth and access problems:
+  //  - 401  -> token revoked/expired  (let the caller recover)
+  //  - 403/404 in App mode -> app not installed on this repo -> install gate
   let baseBranch = info.branch;
-  if (!baseBranch) {
+  try {
     const meta = await new Octokit({ auth: token }).repos.get({ owner: info.owner, repo: info.repo });
-    baseBranch = meta.data.default_branch;
+    if (!baseBranch) baseBranch = meta.data.default_branch;
+  } catch (err) {
+    if (isAuthError(err)) throw err;
+    if (appSlug && isNoRepoAccess(err)) { showInstallGate(token, info); return; }
+    throw err;
   }
   api = withAuthGuard(makeClientApi({ token, owner: info.owner, repo: info.repo, baseBranch }));
   $("auth-overlay").classList.add("hidden");
@@ -1218,7 +1232,41 @@ async function startClientApp(token, info) {
   boot();
 }
 
+// GitHub App mode: the user is signed in but the App isn't installed on this repo
+// yet (so the token can't see it). Guide them to install it on just that repo.
+function showInstallGate(token, info) {
+  const overlay = $("auth-overlay");
+  overlay.classList.remove("hidden");
+  $("signout-btn").classList.add("hidden");
+  $("auth-sub").textContent =
+    `gitwiki needs access to ${info.owner}/${info.repo}. Install it on GitHub and select just that repository, then continue.`;
+  $("auth-repo").value = `${info.owner}/${info.repo}`;
+  $("auth-note").textContent = "";
+  const btn = $("auth-action");
+  btn.textContent = "Install on GitHub ↗";
+  btn.onclick = () => window.open(`https://github.com/apps/${appSlug}/installations/new`, "_blank");
+  const cont = $("auth-action2");
+  cont.classList.remove("hidden");
+  cont.textContent = "I've installed it — continue";
+  cont.onclick = async () => {
+    const next = parseRepoString($("auth-repo").value) || info;
+    try { await startClientApp(token, next); }
+    catch (err) {
+      if (isAuthError(err)) { await clearAuth(); showAuthOverlay(false, next, "Session expired. Please sign in again."); }
+      else $("auth-note").textContent = "Still no access — make sure the app is installed on this repo. (" + err.message + ")";
+    }
+  };
+}
+
+// Accept "slug", "github.com/apps/slug", or a full URL — keep just the slug.
+function normalizeSlug(s) {
+  s = (s || "").trim().replace(/\/+$/, "");
+  const m = /\/apps\/([^/]+)/.exec(s);
+  return m ? m[1] : s.split("/").pop();
+}
+
 async function setupClientMode(cfg) {
+  appSlug = normalizeSlug(cfg.githubAppSlug);
   supabaseClient = createClient(cfg.supabaseUrl, cfg.supabaseAnonKey);
   // provider_token (the GitHub token) is only present right after OAuth; cache it.
   supabaseClient.auth.onAuthStateChange((_e, session) => {
@@ -1249,6 +1297,7 @@ function showAuthOverlay(hasToken, info, note) {
   const overlay = $("auth-overlay");
   overlay.classList.remove("hidden");
   $("signout-btn").classList.add("hidden");
+  $("auth-action2").classList.add("hidden"); // hide the install-gate "continue" button
   $("auth-repo").value = info ? `${info.owner}/${info.repo}` : "";
   $("auth-note").textContent = note;
   const btn = $("auth-action");
