@@ -1274,16 +1274,21 @@ function applyReadOnlyUI() {
 }
 
 // Is the GitHub App installed (for this user) with access to owner/repo?
+// Resilient: a failing per-installation repo listing doesn't abort the whole check.
 async function isAppInstalledOnRepo(octo, owner, repo) {
   const target = `${owner}/${repo}`.toLowerCase();
   const { data } = await octo.request("GET /user/installations", { per_page: 100 });
+  const seen = [];
   for (const inst of data.installations || []) {
-    // "all repos" install on the owning account covers it.
     if (inst.repository_selection === "all" && inst.account?.login?.toLowerCase() === owner.toLowerCase()) return true;
-    // otherwise check the explicitly-selected repos for this installation.
-    const res = await octo.request("GET /user/installations/{installation_id}/repositories", { installation_id: inst.id, per_page: 100 });
-    if ((res.data.repositories || []).some((r) => r.full_name.toLowerCase() === target)) return true;
+    try {
+      const repos = await octo.paginate("GET /user/installations/{installation_id}/repositories", { installation_id: inst.id, per_page: 100 });
+      for (const r of repos) { seen.push(r.full_name); if (r.full_name.toLowerCase() === target) return true; }
+    } catch (e) {
+      console.warn("[gitwiki] could not list repos for installation", inst.id, e?.message);
+    }
   }
+  console.warn(`[gitwiki] app not detected on ${target}. Installations:`, (data.installations || []).map((i) => `${i.account?.login}(${i.repository_selection})`), "selected repos seen:", seen);
   return false;
 }
 
@@ -1341,8 +1346,15 @@ async function setupClientMode(cfg) {
   $("ro-install").onclick = () => { if (appSlug) window.open(`https://github.com/apps/${appSlug}/installations/new`, "_blank"); };
   $("ro-continue").onclick = async () => {
     if (!pendingInstall) return;
-    try { await startClientApp(pendingInstall.token, pendingInstall.info); }
-    catch (err) { toast(err.message, true); }
+    const b = $("ro-continue");
+    b.disabled = true; b.textContent = "Checking…";
+    try {
+      await startClientApp(pendingInstall.token, pendingInstall.info);
+      const { owner, repo } = pendingInstall.info;
+      if (state.readOnly) toast(`Still not detected on ${owner}/${repo} — confirm gitwiki is installed on this exact repo with Contents access (see console for details).`, true);
+      else toast("Editing enabled.");
+    } catch (err) { toast(err.message, true); }
+    finally { b.disabled = false; b.textContent = "I've installed it"; }
   };
 
   const { data: { session } } = await supabaseClient.auth.getSession();
