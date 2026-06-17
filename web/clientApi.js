@@ -1,7 +1,7 @@
 // Client-side replacement for the Express /api/* layer. It exposes the SAME
 // get()/send() interface the app already uses, but dispatches to a browser
 // Octokit client instead of a server — so main.js needs no per-call changes.
-import { makeClient } from "../lib/github.js";
+import { makeClient } from "./github.js";
 
 export function makeClientApi({ token, owner, repo, baseBranch }) {
   const client = makeClient({ token, owner, repo, baseBranch });

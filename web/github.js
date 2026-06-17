@@ -1,4 +1,4 @@
-// Thin wrapper around the GitHub REST API for the wiki POC.
+// Thin wrapper around the GitHub REST API, running in the browser.
 // Source of truth = Markdown files in a GitHub repo.
 // - Pages   -> .md files (read via Contents API, listed via Git Tree API)
 // - Drafts  -> git branches
@@ -7,17 +7,15 @@ import { Octokit } from "@octokit/rest";
 
 const TITLE_PREFIX = "[wiki] "; // issue title convention that maps an issue to a page path
 
-// UTF-8-safe base64, working in both Node (Buffer) and the browser (atob/btoa).
-// GitHub's contents API returns base64 with embedded newlines, so strip whitespace.
+// UTF-8-safe base64 (browser). GitHub's contents API returns base64 with embedded
+// newlines, so strip whitespace before decoding.
 function b64encode(str) {
-  if (typeof Buffer !== "undefined") return Buffer.from(str, "utf8").toString("base64");
   const bytes = new TextEncoder().encode(str);
   let bin = "";
   for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
   return btoa(bin);
 }
 function b64decode(b64) {
-  if (typeof Buffer !== "undefined") return Buffer.from(b64, "base64").toString("utf8");
   const bin = atob(b64.replace(/\s/g, ""));
   return new TextDecoder().decode(Uint8Array.from(bin, (c) => c.charCodeAt(0)));
 }

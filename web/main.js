@@ -22,22 +22,9 @@ const md = new MarkdownIt({ html: false, linkify: true, breaks: true });
 const render = (text) => DOMPurify.sanitize(md.render(text || "")); // for comment bodies
 const esc = (s) => (s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
-// Default: talk to the Express server (/api/*). Client OAuth mode reassigns this
-// to a browser-side shim (see bootstrap at the bottom).
-let api = {
-  async get(url) {
-    const r = await fetch(url);
-    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
-    return r.json();
-  },
-  async send(method, url, body) {
-    const r = await fetch(url, {
-      method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
-    });
-    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
-    return r.json();
-  },
-};
+// The browser-side GitHub API layer, assigned once the user is authenticated
+// (see bootstrap at the bottom). All app code calls api.get()/api.send().
+let api = null;
 
 const $ = (id) => document.getElementById(id);
 const state = { baseBranch: "main", branch: "main", path: null, sha: null, mode: "view", readOnly: false };
@@ -1433,8 +1420,16 @@ function showAuthOverlay(hasToken, info, note) {
   };
 }
 
+function showNotConfigured() {
+  $("auth-overlay").classList.remove("hidden");
+  $("auth-sub").textContent = "Not configured — set supabaseUrl and supabaseAnonKey in public/config.js to enable sign-in.";
+  $("auth-repo").classList.add("hidden");
+  $("auth-action").classList.add("hidden");
+  $("auth-action2").classList.add("hidden");
+}
+
 (function initApp() {
   const cfg = window.GITWIKI_CONFIG || {};
-  if (cfg.supabaseUrl && cfg.supabaseAnonKey) setupClientMode(cfg); // static / OAuth mode
-  else boot();                                                      // legacy server mode
+  if (cfg.supabaseUrl && cfg.supabaseAnonKey) setupClientMode(cfg);
+  else showNotConfigured();
 })();

@@ -1,15 +1,12 @@
 {
   "name": "gitwiki",
   "version": "0.1.0",
-  "description": "A Confluence-like wiki POC fronting a GitHub repo: edit Markdown, branch as drafts, comment via GitHub Issues.",
+  "description": "A fully static, Confluence-like wiki over a GitHub repo: edit Markdown, branch as drafts, comment via GitHub Issues. Each user signs in with their own GitHub account.",
   "type": "module",
-  "main": "server.js",
   "scripts": {
     "build": "esbuild web/main.js --bundle --outfile=public/bundle.js --format=iife --sourcemap",
     "watch": "esbuild web/main.js --bundle --outfile=public/bundle.js --format=iife --sourcemap --watch",
-    "prestart": "npm run build",
-    "start": "node server.js",
-    "dev": "node --watch server.js"
+    "dev": "esbuild web/main.js --bundle --outfile=public/bundle.js --format=iife --sourcemap --servedir=public"
   },
   "dependencies": {
     "@octokit/rest": "^21.0.2",
@@ -24,8 +21,6 @@
     "@tiptap/pm": "^2.10.3",
     "@tiptap/starter-kit": "^2.10.3",
     "dompurify": "^3.2.3",
-    "dotenv": "^16.4.5",
-    "express": "^4.21.2",
     "markdown-it": "^14.1.0",
     "tiptap-markdown": "^0.8.10"
   },
