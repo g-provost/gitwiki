@@ -1183,13 +1183,22 @@ function parseRepoFromUrl() {
   const u = new URL(location.href);
   let r = u.searchParams.get("repo");
   const branch = u.searchParams.get("branch") || "";
-  if (!r && location.hash) {
+  if (r && r.includes("%2F")) r = decodeURIComponent(r); // tolerate double-encoded slash
+  if (!r && location.hash && !location.hash.includes("access_token")) {
     const h = location.hash.replace(/^#\/?/, "");
     if (/^[^/]+\/[^/]+/.test(h)) r = h.split("/").slice(0, 2).join("/");
   }
   if (!r || !r.includes("/")) return null;
   const [owner, repo] = r.split("/");
   return owner && repo ? { owner, repo, branch } : null;
+}
+
+// A pristine app URL (origin + path + ?repo) with NO hash — used as the OAuth
+// redirect target so tokens never accumulate, and to scrub tokens from the bar.
+function cleanAppUrl(repo) {
+  const u = new URL(location.origin + location.pathname);
+  if (repo) u.searchParams.set("repo", repo);
+  return u.toString();
 }
 
 let supabaseClient = null; // set in client mode, used by sign-out + re-auth
@@ -1340,6 +1349,12 @@ async function setupClientMode(cfg) {
   const token = session?.provider_token || sessionStorage.getItem("gh_token");
   const info = parseRepoFromUrl();
 
+  // Scrub OAuth tokens from the address bar once Supabase has read them, so they
+  // can't be reused as a redirect target (which caused the redirect loop).
+  if (location.hash || location.search.includes("access_token")) {
+    history.replaceState(null, "", cleanAppUrl(info ? `${info.owner}/${info.repo}` : ""));
+  }
+
   if (token && info) {
     try { await startClientApp(token, info); return; }
     catch (err) {
@@ -1370,20 +1385,19 @@ function showAuthOverlay(hasToken, info, note) {
   btn.onclick = async () => {
     const val = $("auth-repo").value.trim();
     if (!/^[^/]+\/[^/]+$/.test(val)) { $("auth-note").textContent = "Enter a repository as owner/repo."; return; }
-    const url = new URL(location.href);
-    url.searchParams.set("repo", val);
+    const clean = cleanAppUrl(val); // pristine target — no stale hash/tokens
     const token = sessionStorage.getItem("gh_token");
     if (hasToken && token) {
-      history.replaceState(null, "", url.toString());
+      history.replaceState(null, "", clean);
       try {
-        await startClientApp(token, parseRepoFromUrl());
+        await startClientApp(token, parseRepoString(val));
       } catch (err) {
-        if (isAuthError(err)) { await clearAuth(); showAuthOverlay(false, parseRepoFromUrl(), "That session is no longer valid. Please sign in again."); }
+        if (isAuthError(err)) { await clearAuth(); showAuthOverlay(false, parseRepoString(val), "That session is no longer valid. Please sign in again."); }
         else $("auth-note").textContent = err.message;
       }
     } else {
-      // Carry the repo through the OAuth round-trip via redirectTo.
-      await supabaseClient.auth.signInWithOAuth({ provider: "github", options: { scopes: "repo", redirectTo: url.toString() } });
+      // Carry the repo through the OAuth round-trip via a clean redirectTo.
+      await supabaseClient.auth.signInWithOAuth({ provider: "github", options: { scopes: "repo", redirectTo: clean } });
     }
   };
 }
