@@ -81,15 +81,23 @@ const AnchorExtension = Extension.create({
 // Render a `mermaid` code block as a live diagram; other code blocks render
 // normally. Source stays a fenced ```mermaid block (clean Markdown round-trip).
 let mermaidSeq = 0;
-function renderMermaid(el, src) {
+async function renderMermaid(el, src) {
   if (!window.mermaid) { el.innerHTML = '<div class="mermaid-error">mermaid not loaded</div>'; return; }
   if (!src.trim()) { el.innerHTML = '<div class="mermaid-empty">Empty diagram - type Mermaid syntax below.</div>'; return; }
-  const id = "mmd-" + mermaidSeq++;
-  window.mermaid
-    .render(id, src)
-    .then(({ svg }) => { if (el.dataset.src === src) el.innerHTML = svg; })
-    .catch((e) => { if (el.dataset.src === src) el.innerHTML = `<div class="mermaid-error">${esc(e?.message || String(e))}</div>`; });
   el.dataset.src = src;
+  // Validate first WITHOUT rendering. Invalid syntax (normal while typing) would
+  // otherwise make mermaid inject its error "bomb" graphic into the page, and
+  // those stack up. parse({suppressErrors}) returns false instead of throwing.
+  let valid = false;
+  try { valid = await window.mermaid.parse(src, { suppressErrors: true }); } catch { valid = false; }
+  if (el.dataset.src !== src) return; // superseded by newer keystrokes
+  if (!valid) { el.innerHTML = '<div class="mermaid-error">Syntax error - keep typing…</div>'; return; }
+  try {
+    const { svg } = await window.mermaid.render("mmd-" + mermaidSeq++, src);
+    if (el.dataset.src === src) el.innerHTML = svg;
+  } catch (e) {
+    if (el.dataset.src === src) el.innerHTML = `<div class="mermaid-error">${esc(e?.message || String(e))}</div>`;
+  }
 }
 
 function codeBlockNodeView({ node }) {
@@ -304,7 +312,7 @@ function applyTheme(theme) {
   $("theme-btn").textContent = theme === "dark" ? "☀️" : "🌙";
   try { localStorage.setItem("gitwiki-theme", theme); } catch { /* ignore */ }
   if (window.mermaid) {
-    window.mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme: theme === "dark" ? "dark" : "default" });
+    window.mermaid.initialize({ startOnLoad: false, securityLevel: "strict", suppressErrorRendering: true, theme: theme === "dark" ? "dark" : "default" });
     rerenderAllMermaid();
   }
 }
